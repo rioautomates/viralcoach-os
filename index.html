@@ -369,6 +369,13 @@
   .rl-filters .lead-search{flex:0 1 240px}
   .rl-filters select{border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13.5px;font-family:inherit;background:#fff;color:var(--ink-soft);cursor:pointer}
   .rl-showing{font-size:12.5px;font-weight:700;color:var(--muted);margin-left:auto}
+  .rl-sync{font-size:12px;font-weight:700;padding:7px 11px;border-radius:9px;align-self:center;white-space:nowrap}
+  .rl-sync.ok{color:#0c6b3d;background:var(--ok-bg)}
+  .rl-sync.sync{color:#1740b0;background:var(--info-bg)}
+  .rl-sync.off{color:var(--bad);background:var(--bad-bg)}
+  body.dark .rl-sync.ok{background:#13301d;color:#84e2a4}
+  body.dark .rl-sync.sync{background:#172a4a;color:#a3bcff}
+  body.dark .rl-sync.off{background:#33191a;color:#ffa3a3}
 
   /* ---------- Logs ---------- */
   .lcount{font-size:12px;font-weight:700;color:var(--muted);background:#f0f1f7;border-radius:100px;padding:3px 10px;margin-left:4px}
@@ -739,6 +746,7 @@
       <div class="tracker-top" style="margin-bottom:12px">
         <div><p class="sub" style="margin:0">Log every reply, then track the funnel — did they <b>book</b>, <b>show</b>, <b>qualify</b>, <b>close</b>? Click a cell to toggle it.</p></div>
         <div class="actions" style="margin:0">
+          <span id="rlSync" class="rl-sync sync">⟳ Syncing…</span>
           <button id="rlExport" class="b-btn">⬇ Export</button>
           <label class="b-btn" for="rlImport">⬆ Import</label>
           <input type="file" id="rlImport" accept=".csv,text/csv" hidden />
@@ -1511,6 +1519,29 @@
   var rlid=0; function rId(){ return "r_"+(++rlid)+"_"+Date.now(); }
   function rFind(id){ return RL.rows.filter(function(x){return x.id===id;})[0]; }
 
+  /* ---------- Supabase cloud sync (shared between you + your VA) ---------- */
+  var SB_URL="https://hjdyuyusnzxxwcdsshts.supabase.co/rest/v1";
+  var SB_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhqZHl1eXVzbnp4eHdjZHNzaHRzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3MDMyMDQsImV4cCI6MjA5NTI3OTIwNH0.kElSrLiR-YH2jzS-uxhtBolM-qGxDsZ3vUlRzlYsapM";
+  var SB_H={ "apikey":SB_KEY, "Authorization":"Bearer "+SB_KEY };
+  function sbStatus(s){ var el=$("rlSync"); if(!el)return; el.className="rl-sync "+s; el.textContent=(s==="ok"?"☁ Synced":s==="sync"?"⟳ Syncing…":"⚠ Offline"); }
+  function sbIn(d){ return {id:d.id,date:d.date||"",name:d.name||"",channel:d.channel||"SMS",link:d.link||"",booked:!!d.booked,apptDate:d.appt_date||"",showed:!!d.showed,qualified:!!d.qualified,closed:!!d.closed}; }
+  function sbOut(r){ return {id:r.id,date:r.date||null,name:r.name||"",channel:r.channel||"SMS",link:r.link||"",booked:!!r.booked,appt_date:r.apptDate||null,showed:!!r.showed,qualified:!!r.qualified,closed:!!r.closed,updated_at:new Date().toISOString()}; }
+  function sbHdr(extra){ var h={}; for(var k in SB_H) h[k]=SB_H[k]; if(extra) for(var j in extra) h[j]=extra[j]; return h; }
+  function sbUpsert(r){ if(!r)return; sbStatus("sync"); fetch(SB_URL+"/replies?on_conflict=id",{method:"POST",headers:sbHdr({"Content-Type":"application/json","Prefer":"resolution=merge-duplicates,return=minimal"}),body:JSON.stringify(sbOut(r))}).then(function(x){ sbStatus(x.ok?"ok":"off"); }).catch(function(){ sbStatus("off"); }); }
+  function sbUpsertMany(rows){ if(!rows||!rows.length)return; sbStatus("sync"); fetch(SB_URL+"/replies?on_conflict=id",{method:"POST",headers:sbHdr({"Content-Type":"application/json","Prefer":"resolution=merge-duplicates,return=minimal"}),body:JSON.stringify(rows.map(sbOut))}).then(function(x){ sbStatus(x.ok?"ok":"off"); }).catch(function(){ sbStatus("off"); }); }
+  function sbDelete(id){ fetch(SB_URL+"/replies?id=eq."+encodeURIComponent(id),{method:"DELETE",headers:sbHdr({"Prefer":"return=minimal"})}).catch(function(){}); }
+  function sbPull(cb){ sbStatus("sync"); fetch(SB_URL+"/replies?select=*",{headers:SB_H}).then(function(x){ return x.ok?x.json():Promise.reject(x.status); }).then(function(data){ RL.rows=data.map(sbIn); rsave(); sbStatus("ok"); if(cb)cb(true); }).catch(function(){ sbStatus("off"); if(cb)cb(false); }); }
+  // pull cloud data on load
+  sbPull(function(){ renderRL(); });
+  // auto-refresh while viewing the tracker (skips while you're editing a field)
+  setInterval(function(){
+    if(document.hidden) return;
+    var lt=$("leadTracker"); if(!lt||lt.style.display==="none") return;
+    var ae=document.activeElement; if(ae&&lt.contains(ae)&&(ae.isContentEditable||ae.tagName==="INPUT"||ae.tagName==="TEXTAREA")) return;
+    sbPull(function(ok){ if(ok) renderRL(); });
+  },15000);
+  window.addEventListener("focus",function(){ var lt=$("leadTracker"); if(lt&&lt.style.display!=="none") sbPull(function(ok){ if(ok) renderRL(); }); });
+
   function renderRLSummary(){
     var rows=RL.rows,t=rows.length;
     var cnt=function(f){ return rows.filter(function(r){return r[f];}).length; };
@@ -1575,17 +1606,18 @@
     $("rlShowing").textContent=RL.rows.length?("Showing "+list.length+" of "+RL.rows.length):"";
     $("rlEmpty").textContent=RL.rows.length?"No replies match your filters.":"No replies logged yet — add one above as you respond to leads.";
     $("rlEmpty").style.display=list.length?"none":"";
-    document.querySelectorAll("[data-tg]").forEach(function(b){ b.addEventListener("click",function(){ var p=b.getAttribute("data-tg").split("|"),r=rFind(p[0]); if(r){ r[p[1]]=!r[p[1]]; rsave(); renderRL(); } }); });
-    document.querySelectorAll("[data-appt]").forEach(function(i){ i.addEventListener("change",function(){ var r=rFind(i.getAttribute("data-appt")); if(r){ r.apptDate=i.value; rsave(); } }); });
-    document.querySelectorAll("[data-rn]").forEach(function(el){ el.addEventListener("blur",function(){ var r=rFind(el.getAttribute("data-rn")); if(r){ r.name=el.textContent.trim(); rsave(); } }); });
-    document.querySelectorAll("[data-rd]").forEach(function(b){ b.addEventListener("click",function(){ var r=rFind(b.getAttribute("data-rd")); if(!r)return; if(!confirm("Delete this reply"+(r.name?" ("+r.name+")":"")+"?"))return; RL.rows=RL.rows.filter(function(x){return x.id!==r.id;}); rsave(); renderRL(); }); });
+    document.querySelectorAll("[data-tg]").forEach(function(b){ b.addEventListener("click",function(){ var p=b.getAttribute("data-tg").split("|"),r=rFind(p[0]); if(r){ r[p[1]]=!r[p[1]]; rsave(); renderRL(); sbUpsert(r); } }); });
+    document.querySelectorAll("[data-appt]").forEach(function(i){ i.addEventListener("change",function(){ var r=rFind(i.getAttribute("data-appt")); if(r){ r.apptDate=i.value; rsave(); sbUpsert(r); } }); });
+    document.querySelectorAll("[data-rn]").forEach(function(el){ el.addEventListener("blur",function(){ var r=rFind(el.getAttribute("data-rn")); if(r){ r.name=el.textContent.trim(); rsave(); sbUpsert(r); } }); });
+    document.querySelectorAll("[data-rd]").forEach(function(b){ b.addEventListener("click",function(){ var r=rFind(b.getAttribute("data-rd")); if(!r)return; if(!confirm("Delete this reply"+(r.name?" ("+r.name+")":"")+"?"))return; RL.rows=RL.rows.filter(function(x){return x.id!==r.id;}); rsave(); renderRL(); sbDelete(r.id); }); });
   }
   $("rlDate").value=todayStr();
   $("rlAdd").addEventListener("click",function(){
     var name=$("rlName").value.trim(),link=$("rlLink").value.trim();
     if(!name&&!link){ $("rlName").focus(); return; }
-    RL.rows.unshift({id:rId(),date:$("rlDate").value,name:name,channel:$("rlChannel").value,link:link,booked:false,apptDate:"",showed:false,qualified:false,closed:false});
-    rsave(); $("rlName").value=""; $("rlLink").value=""; renderRL(); $("rlName").focus();
+    var newRow={id:rId(),date:$("rlDate").value,name:name,channel:$("rlChannel").value,link:link,booked:false,apptDate:"",showed:false,qualified:false,closed:false};
+    RL.rows.unshift(newRow);
+    rsave(); $("rlName").value=""; $("rlLink").value=""; renderRL(); $("rlName").focus(); sbUpsert(newRow);
   });
   ["rlName","rlLink"].forEach(function(id){ $(id).addEventListener("keydown",function(e){ if(e.key==="Enter"){ e.preventDefault(); $("rlAdd").click(); } }); });
   $("rlExport").addEventListener("click",function(){
@@ -1604,7 +1636,7 @@
       if(!confirm("Import "+body.length+" replies from CSV? This replaces the current reply log.")) return;
       var id=0;
       RL={rows: body.map(function(r){ return {id:"csv_"+(++id),date:dFromAny(g_(r,ci.date)),name:g_(r,ci.name),channel:g_(r,ci.channel)||"SMS",link:g_(r,ci.link),booked:b_(r,ci.booked),apptDate:dFromAny(g_(r,ci.appt)),showed:b_(r,ci.showed),qualified:b_(r,ci.qualified),closed:b_(r,ci.closed)}; })};
-      rsave(); renderRL();
+      rsave(); renderRL(); sbUpsertMany(RL.rows);
     });
     e.target.value="";
   });
