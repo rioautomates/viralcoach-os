@@ -742,6 +742,8 @@
           <button id="rlExport" class="b-btn">⬇ Export</button>
           <label class="b-btn" for="rlImport">⬆ Import</label>
           <input type="file" id="rlImport" accept=".csv,text/csv" hidden />
+          <button id="rlSync" class="b-btn">🔄 Sync from Sheet</button>
+          <span id="rlSyncStatus" class="rl-showing" style="align-self:center;margin-left:8px;opacity:.85"></span>
         </div>
       </div>
 
@@ -1498,7 +1500,7 @@
       $("leadTemplates").style.display=t==="templates"?"":"none";
       $("leadTracker").style.display=t==="tracker"?"":"none";
       try{ localStorage.setItem("vc_lead_sub",t); }catch(e){}
-      if(t==="tracker") renderRL();
+      if(t==="tracker"){ renderRL(); syncFromSheet(false); }
       syncHistory();
     });
   });
@@ -1615,6 +1617,51 @@
   document.querySelectorAll("#rlStatusFilters .fchip").forEach(function(c){
     c.addEventListener("click",function(){ document.querySelectorAll("#rlStatusFilters .fchip").forEach(function(x){x.classList.remove("active");}); c.classList.add("active"); rlStatusF=c.getAttribute("data-rs"); renderRL(); });
   });
+
+  /* ---------- Live sync from the n8n "X 3" workflow's Google Sheet (read-only mirror) ---------- */
+  var BRIDGE_URL="https://script.google.com/macros/s/AKfycbz4akwjQnKd_IZVdff_OBw-THbFa-RW9XFMmbpBce-qwCvSYWa_J2PkD79sZQzihVC1IQ/exec";
+  function rlCid(l){ var m=String(l||"").match(/contacts\/detail\/([A-Za-z0-9]+)/); return m?m[1]:""; }
+  function rlISO(s){
+    if(!s) return ""; s=String(s).trim();
+    if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    var m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);                     // M/D/YYYY (workflow + display)
+    if(m) return m[3]+"-"+("0"+m[1]).slice(-2)+"-"+("0"+m[2]).slice(-2);
+    var MN={Jan:1,Feb:2,Mar:3,Apr:4,May:5,Jun:6,Jul:7,Aug:8,Sep:9,Oct:10,Nov:11,Dec:12};
+    var n=s.match(/([A-Za-z]{3})\s+(\d{1,2})\s+(\d{4})/);                // "Fri Jun 05 2026 …" (no TZ shift)
+    if(n&&MN[n[1]]) return n[3]+"-"+("0"+MN[n[1]]).slice(-2)+"-"+("0"+n[2]).slice(-2);
+    var d=new Date(s); if(!isNaN(d.getTime())) return d.getFullYear()+"-"+("0"+(d.getMonth()+1)).slice(-2)+"-"+("0"+d.getDate()).slice(-2);
+    return "";
+  }
+  var rlSyncing=false;
+  function syncFromSheet(loud){
+    if(rlSyncing) return; rlSyncing=true;
+    var st=$("rlSyncStatus"); if(st&&loud) st.textContent="⏳ Syncing…";
+    fetch(BRIDGE_URL,{cache:"no-store"}).then(function(r){ return r.json(); }).then(function(data){
+      var leads=(data&&data.leads)||[];
+      var byCid={},byName={};
+      RL.rows.forEach(function(r){ var c=rlCid(r.link); if(c) byCid[c]=r; if(r.name) byName[String(r.name).trim().toLowerCase()]=r; });
+      var updated=0,added=0;
+      leads.forEach(function(l){
+        var row=(l.contactId&&byCid[l.contactId])||(l.name&&byName[String(l.name).trim().toLowerCase()]);
+        var na=rlISO(l.apptDate);
+        if(row){                                  // existing row → reflect workflow's booked + appt date
+          var changed=false;
+          if(l.booked && !row.booked){ row.booked=true; changed=true; }
+          if(na && row.apptDate!==na){ row.apptDate=na; changed=true; }
+          if(changed) updated++;
+        } else if(l.booked){                       // booked lead missing from tracker → add it
+          RL.rows.unshift({id:"sheet_"+(l.contactId||l.name),date:rlISO(l.date)||todayStr(),name:l.name||"",channel:l.channel||"SMS",link:l.contactLink||"",booked:true,apptDate:na,showed:!!l.showed,qualified:!!l.qualified,closed:!!l.closed});
+          if(l.contactId) byCid[l.contactId]=RL.rows[0];
+          added++;
+        }
+      });
+      if(updated||added){ rsave(); renderRL(); }
+      if(st){ var d=new Date(); st.textContent="✓ Synced "+leads.length+" booked · "+("0"+d.getHours()).slice(-2)+":"+("0"+d.getMinutes()).slice(-2)+(added?(" · +"+added+" new"):"")+(updated?(" · "+updated+" updated"):""); }
+    })["catch"](function(){ if(st) st.textContent="⚠ Sheet sync failed — check the bridge link"; }).then(function(){ rlSyncing=false; });
+  }
+  var rlSyncBtn=$("rlSync"); if(rlSyncBtn) rlSyncBtn.addEventListener("click",function(){ syncFromSheet(true); });
+  syncFromSheet(true);                                                   // sync once on load
+  setInterval(function(){ if(document.visibilityState!=="hidden") syncFromSheet(false); },180000); // and every 3 min
 
   // restore saved sub-view
   (function(){ var sv="templates"; try{ sv=localStorage.getItem("vc_lead_sub")||"templates"; }catch(e){} if(sv==="tracker"){ var btn=document.querySelector('#leadSub button[data-ls="tracker"]'); if(btn) btn.click(); } })();
