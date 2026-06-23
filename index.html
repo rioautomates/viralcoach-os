@@ -819,12 +819,15 @@
   function sbIsEditing(containerId){ var el=document.getElementById(containerId),ae=document.activeElement; return !!(el&&ae&&el.contains(ae)&&(ae.isContentEditable||ae.tagName==="INPUT"||ae.tagName==="TEXTAREA")); }
   function sbStateGet(key,cb){ fetch(SB_URL+"/app_state?key=eq."+key+"&select=data",{headers:SB_H}).then(function(x){ return x.ok?x.json():Promise.reject(x.status); }).then(function(a){ cb(a&&a[0]?a[0].data:null); }).catch(function(){ cb(undefined); }); }
   function sbStatePut(key,obj){ fetch(SB_URL+"/app_state?on_conflict=key",{method:"POST",headers:sbHdr({"Content-Type":"application/json","Prefer":"resolution=merge-duplicates,return=minimal"}),body:JSON.stringify({key:key,data:obj,updated_at:new Date().toISOString()})}).catch(function(){}); }
+  // "recently changed locally" guards — stop an in-flight refresh from reverting a fresh local edit
+  var GUARD_MS=6000, lastCloChange=0, lastLogChange=0, lastReplyChange=0;
   /* Closer Tracker cloud sync */
   var cloLockC=false;
-  function pushClosers(){ if(cloLockC) return; sbStatePut("closers",{closers:T.closers}); }
+  function pushClosers(){ if(cloLockC) return; lastCloChange=Date.now(); sbStatePut("closers",{closers:T.closers}); }
   function pullClosers(initial){
     sbStateGet("closers",function(data){
       if(data&&Array.isArray(data.closers)){
+        if(Date.now()-lastCloChange<GUARD_MS) return;
         if(sbIsEditing("tbody")) return;
         if(JSON.stringify(data.closers)===JSON.stringify(T.closers)) return;
         cloLockC=true; T.closers=data.closers; save(); cloLockC=false; render();
@@ -833,10 +836,11 @@
   }
   /* Logs cloud sync */
   var cloLockL=false;
-  function pushLogs(){ if(cloLockL) return; sbStatePut("logs",{cancelled:L.cancelled,time:L.time,unsure:L.unsure}); }
+  function pushLogs(){ if(cloLockL) return; lastLogChange=Date.now(); sbStatePut("logs",{cancelled:L.cancelled,time:L.time,unsure:L.unsure}); }
   function pullLogs(initial){
     sbStateGet("logs",function(data){
       if(data&&(data.cancelled||data.time||data.unsure)){
+        if(Date.now()-lastLogChange<GUARD_MS) return;
         if(sbIsEditing("logsView")) return;
         var nd={cancelled:data.cancelled||[],time:data.time||[],unsure:data.unsure||[]};
         if(JSON.stringify(nd)===JSON.stringify({cancelled:L.cancelled,time:L.time,unsure:L.unsure})) return;
@@ -1557,20 +1561,21 @@
   function sbStatus(s){ var el=$("rlSync"); if(!el)return; el.className="rl-sync "+s; el.textContent=(s==="ok"?"☁ Synced":s==="sync"?"⟳ Syncing…":"⚠ Offline"); }
   function sbIn(d){ return {id:d.id,date:d.date||"",name:d.name||"",channel:d.channel||"SMS",link:d.link||"",booked:!!d.booked,apptDate:d.appt_date||"",showed:!!d.showed,qualified:!!d.qualified,closed:!!d.closed}; }
   function sbOut(r){ return {id:r.id,date:r.date||null,name:r.name||"",channel:r.channel||"SMS",link:r.link||"",booked:!!r.booked,appt_date:r.apptDate||null,showed:!!r.showed,qualified:!!r.qualified,closed:!!r.closed,updated_at:new Date().toISOString()}; }
-  function sbUpsert(r){ if(!r)return; sbStatus("sync"); fetch(SB_URL+"/replies?on_conflict=id",{method:"POST",headers:sbHdr({"Content-Type":"application/json","Prefer":"resolution=merge-duplicates,return=minimal"}),body:JSON.stringify(sbOut(r))}).then(function(x){ sbStatus(x.ok?"ok":"off"); }).catch(function(){ sbStatus("off"); }); }
-  function sbUpsertMany(rows){ if(!rows||!rows.length)return; sbStatus("sync"); fetch(SB_URL+"/replies?on_conflict=id",{method:"POST",headers:sbHdr({"Content-Type":"application/json","Prefer":"resolution=merge-duplicates,return=minimal"}),body:JSON.stringify(rows.map(sbOut))}).then(function(x){ sbStatus(x.ok?"ok":"off"); }).catch(function(){ sbStatus("off"); }); }
-  function sbDelete(id){ fetch(SB_URL+"/replies?id=eq."+encodeURIComponent(id),{method:"DELETE",headers:sbHdr({"Prefer":"return=minimal"})}).catch(function(){}); }
+  function sbUpsert(r){ if(!r)return; lastReplyChange=Date.now(); sbStatus("sync"); fetch(SB_URL+"/replies?on_conflict=id",{method:"POST",headers:sbHdr({"Content-Type":"application/json","Prefer":"resolution=merge-duplicates,return=minimal"}),body:JSON.stringify(sbOut(r))}).then(function(x){ sbStatus(x.ok?"ok":"off"); }).catch(function(){ sbStatus("off"); }); }
+  function sbUpsertMany(rows){ if(!rows||!rows.length)return; lastReplyChange=Date.now(); sbStatus("sync"); fetch(SB_URL+"/replies?on_conflict=id",{method:"POST",headers:sbHdr({"Content-Type":"application/json","Prefer":"resolution=merge-duplicates,return=minimal"}),body:JSON.stringify(rows.map(sbOut))}).then(function(x){ sbStatus(x.ok?"ok":"off"); }).catch(function(){ sbStatus("off"); }); }
+  function sbDelete(id){ lastReplyChange=Date.now(); fetch(SB_URL+"/replies?id=eq."+encodeURIComponent(id),{method:"DELETE",headers:sbHdr({"Prefer":"return=minimal"})}).catch(function(){}); }
   function sbPull(cb){ sbStatus("sync"); fetch(SB_URL+"/replies?select=*",{headers:SB_H}).then(function(x){ return x.ok?x.json():Promise.reject(x.status); }).then(function(data){ RL.rows=data.map(sbIn); rsave(); sbStatus("ok"); if(cb)cb(true); }).catch(function(){ sbStatus("off"); if(cb)cb(false); }); }
   // pull cloud data on load
   sbPull(function(){ renderRL(); });
-  // auto-refresh while viewing the tracker (skips while you're editing a field)
+  // auto-refresh while viewing the tracker (skips while you're editing a field or just made a change)
   setInterval(function(){
     if(document.hidden) return;
     var lt=$("leadTracker"); if(!lt||lt.style.display==="none") return;
+    if(Date.now()-lastReplyChange<GUARD_MS) return;
     var ae=document.activeElement; if(ae&&lt.contains(ae)&&(ae.isContentEditable||ae.tagName==="INPUT"||ae.tagName==="TEXTAREA")) return;
     sbPull(function(ok){ if(ok) renderRL(); });
   },15000);
-  window.addEventListener("focus",function(){ var lt=$("leadTracker"); if(lt&&lt.style.display!=="none") sbPull(function(ok){ if(ok) renderRL(); }); });
+  window.addEventListener("focus",function(){ var lt=$("leadTracker"); if(lt&&lt.style.display!=="none"&&Date.now()-lastReplyChange>GUARD_MS) sbPull(function(ok){ if(ok) renderRL(); }); });
 
   function renderRLSummary(){
     var rows=RL.rows,t=rows.length;
