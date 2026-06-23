@@ -230,7 +230,7 @@
   /* ---------- Dashboard ---------- */
   .dash-head h2{font-size:24px;margin:0}
   .dash-head{margin-bottom:20px}
-  .dash-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:28px}
+  .dash-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:14px;margin-bottom:28px}
   .dstat{background:#fff;border:1px solid var(--line);border-radius:15px;padding:18px 18px;box-shadow:var(--shadow)}
   .dstat .v{font-size:27px;font-weight:800;color:var(--brand);letter-spacing:-.5px;line-height:1.1}
   .dstat .v small{font-size:15px;color:var(--muted);font-weight:700}
@@ -941,10 +941,20 @@
     // time sessions today
     var today=todayStr(), tsess=L.time.filter(function(r){return r.date===today;}).length;
     $("dashStats").innerHTML=
+      '<div class="dstat"><div class="v" id="dashBookToday" style="color:var(--done)">–</div><div class="l">📅 Demos booked today<br><span id="dashBookYest" style="color:var(--muted)"></span></div></div>'+
       '<div class="dstat"><div class="v">'+handled+' <small>/ '+ct+'</small></div><div class="l">Closers handled</div><div class="bar"><span style="width:'+cpct+'%"></span></div></div>'+
       '<div class="dstat"><div class="v">'+due+'</div><div class="l">Closers due to clear</div></div>'+
       '<div class="dstat"><div class="v">'+booked+' <small>/ '+rt+'</small></div><div class="l">Leads booked ('+brate+'%)</div></div>'+
       '<div class="dstat"><div class="v">'+tsess+'</div><div class="l">Time entries logged today</div></div>';
+    loadBookingStats();
+  }
+  function loadBookingStats(){
+    sbStateGet("booking_stats",function(data){
+      if(!data) return;
+      var t=$("dashBookToday"), y=$("dashBookYest");
+      if(t) t.textContent=(data.today!=null?data.today:0);
+      if(y) y.textContent=(data.yesterday!=null?data.yesterday:0)+" yesterday";
+    });
   }
   document.querySelectorAll(".dcard[data-go]").forEach(function(card){
     card.addEventListener("click",function(){
